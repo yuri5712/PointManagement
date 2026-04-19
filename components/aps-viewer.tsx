@@ -57,6 +57,8 @@ declare global {
     THREE?: {
       Vector3: new (x?: number, y?: number, z?: number) => WorldPos3D
       Box3: new () => APSBox3
+      /** RGBA カラー（setThemingColor 用）*/
+      Vector4: new (x?: number, y?: number, z?: number, w?: number) => { x: number; y: number; z: number; w: number }
     }
     Autodesk?: {
       Viewing: {
@@ -107,6 +109,18 @@ interface APSViewerInstance {
   restoreState(state: object, filter?: object, immediate?: boolean): boolean
   /** ワールド座標 → ビューアコンテナ内スクリーン座標（px） */
   worldToClient(point: WorldPos3D): { x: number; y: number } | null
+  /**
+   * 指定 dbId に色付きハイライトを適用（オレンジ推奨: Vector4(1,0.5,0,1)）。
+   * recursive=true で子孫ノードにも適用可。
+   */
+  setThemingColor(
+    dbId: number,
+    color: { x: number; y: number; z: number; w: number },
+    model?: unknown,
+    recursive?: boolean
+  ): void
+  /** モデル全体のテーミングカラーをリセット */
+  clearThemingColors(model?: unknown): void
   navigation: { setIsOrtho(ortho: boolean): void }
   model: {
     getInstanceTree(): APSInstanceTree
@@ -264,7 +278,10 @@ function RealAPSViewer({
   const dbIdCacheRef = useRef<Map<string, number>>(new Map())
 
   // 外部から select + fitToView を要求するワンショット命令
-  const { pendingSelectObjectId, setPendingSelectObjectId } = useViewerStore()
+  const {
+    pendingSelectObjectId, setPendingSelectObjectId,
+    selectedElementId,
+  } = useViewerStore()
 
   const [status,     setStatus]     = useState<"loading" | "ready" | "error">("loading")
   const [errorMsg,   setErrorMsg]   = useState("")
@@ -273,6 +290,13 @@ function RealAPSViewer({
    * true になると issues → bimPinsRef 取り込み effect が動く。
    */
   const [modelReady, setModelReady] = useState(false)
+  /**
+   * 対象要素の Viewer 内特定状態。
+   * - "unknown"  : 未確認（モデルロード前・pendingSelect 待ち）
+   * - "found"    : dbId 解決済み → select + fitToView 実施済み
+   * - "notfound" : dbId がキャッシュに存在しない
+   */
+  const [elementLocated, setElementLocated] = useState<"unknown" | "found" | "notfound">("unknown")
 
   /**
    * ビューア内スクリーン座標（px）。
@@ -322,7 +346,8 @@ function RealAPSViewer({
 
   // ─── pendingSelectObjectId 消費: select + fitToView ───────
   // modelReady かつ pendingSelectObjectId がセットされたとき実行。
-  // dbIdCacheRef でキャッシュミスの場合はスキップ（ログのみ）。
+  // キャッシュヒット時 → select + fitToView → elementLocated:"found"
+  // キャッシュミス時  → elementLocated:"notfound"（ワンショットはクリアしない）
   useEffect(() => {
     if (!modelReady || !pendingSelectObjectId) return
     const viewer = viewerRef.current
@@ -330,14 +355,40 @@ function RealAPSViewer({
 
     const dbId = dbIdCacheRef.current.get(pendingSelectObjectId)
     if (dbId !== undefined) {
-      try { viewer.select([dbId]) }                          catch (e) { console.warn("[APS] select failed:", e) }
-      try { viewer.fitToView([dbId], undefined, false) }    catch (e) { console.warn("[APS] fitToView failed:", e) }
+      try { viewer.select([dbId]) }                       catch (e) { console.warn("[APS] select failed:", e) }
+      try { viewer.fitToView([dbId], undefined, false) }  catch (e) { console.warn("[APS] fitToView failed:", e) }
+      setElementLocated("found")
+      // ワンショット消費
+      setPendingSelectObjectId(null)
     } else {
-      console.info("[APS] pendingSelect: dbId not cached yet for", pendingSelectObjectId)
+      // キャッシュミス: pendingSelectObjectId は残したまま notfound を通知
+      console.info("[APS] pendingSelect: dbId not in cache for", pendingSelectObjectId)
+      setElementLocated("notfound")
+      setPendingSelectObjectId(null)
     }
-    // ワンショット: 消費後は null に戻す
-    setPendingSelectObjectId(null)
   }, [pendingSelectObjectId, modelReady, setPendingSelectObjectId])
+
+  // ─── selectedElementId 変化 → setThemingColor でオレンジ強調 ──
+  // modelReady 後、selectedElementId が変わるたびに:
+  //   1. clearThemingColors() で前のハイライトを消す
+  //   2. 新しい dbId が取れれば setThemingColor(dbId, orange) を適用
+  useEffect(() => {
+    if (!modelReady) return
+    const viewer = viewerRef.current
+    if (!viewer) return
+
+    try { viewer.clearThemingColors() } catch { /* noop */ }
+
+    if (selectedElementId) {
+      const dbId = dbIdCacheRef.current.get(selectedElementId)
+      if (dbId !== undefined && window.THREE?.Vector4) {
+        try {
+          const orange = new window.THREE.Vector4(1, 0.5, 0, 1)
+          viewer.setThemingColor(dbId, orange, undefined, true)
+        } catch (e) { console.warn("[APS] setThemingColor failed:", e) }
+      }
+    }
+  }, [selectedElementId, modelReady])
 
   // ─── viewMode 切替（3D ↔ 2D）────────────────────────────
   useEffect(() => {
@@ -398,20 +449,29 @@ function RealAPSViewer({
                 setStatus("ready")
 
                 // ── externalId → dbId を一括取得してキャッシュ ──
-                // これにより、指摘クリック等で pendingSelectObjectId が
-                // セットされた際に確実に dbId を解決できる。
+                // getExternalIdMapping は非同期コールバック方式のため、
+                // コールバック内で setModelReady(true) を呼ぶことで
+                // "キャッシュ構築完了後" に pendingSelectObjectId effect が
+                // 発火することを保証する（レースコンディション回避）。
                 try {
-                  viewer.model.getExternalIdMapping((mapping) => {
-                    for (const [extId, dbId] of Object.entries(mapping)) {
-                      dbIdCacheRef.current.set(extId, dbId)
+                  viewer.model.getExternalIdMapping(
+                    (mapping) => {
+                      for (const [extId, dbId] of Object.entries(mapping)) {
+                        dbIdCacheRef.current.set(extId, dbId)
+                      }
+                      console.info("[APS] externalId cache built:", dbIdCacheRef.current.size, "entries")
+                      if (!cancelled) setModelReady(true)
+                    },
+                    (e) => {
+                      console.warn("[APS] getExternalIdMapping failed:", e)
+                      // マッピング失敗でも Viewer は使えるので ready にする
+                      if (!cancelled) setModelReady(true)
                     }
-                  })
+                  )
                 } catch (e) {
-                  console.warn("[APS] getExternalIdMapping failed:", e)
+                  console.warn("[APS] getExternalIdMapping threw:", e)
+                  setModelReady(true)
                 }
-
-                // ↓ これで issues → bimPinsRef / pendingSelect の effect が発火する
-                setModelReady(true)
 
                 // ── カメラ変化 → ピン再投影 ──────────────────
                 viewer.addEventListener(
@@ -528,6 +588,16 @@ function RealAPSViewer({
             <AlertCircle className="w-8 h-8" />
             <p className="font-medium text-sm">エラーが発生しました</p>
             <p className="text-xs text-muted-foreground">{errorMsg}</p>
+          </div>
+        </div>
+      )}
+
+      {/* 対象要素が特定できない場合の警告バナー */}
+      {elementLocated === "notfound" && (
+        <div className="absolute inset-x-0 top-2 flex justify-center z-[30] pointer-events-none">
+          <div className="flex items-center gap-2 bg-amber-50 border border-amber-300 text-amber-700 text-xs font-semibold px-3 py-1.5 rounded-full shadow-md">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            対象要素がViewerで特定できません
           </div>
         </div>
       )}

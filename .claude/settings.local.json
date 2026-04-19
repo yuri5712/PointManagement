@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm build:*)",
+      "Bash(npm run:*)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d.get\\('packageManager',''\\)\\)\")",
+      "Bash(export PATH=\"/usr/local/bin:/opt/homebrew/bin:/usr/bin:$PATH\")",
+      "Read(//Users/katouyuri/**)",
+      "Bash(sed -i '' 's/elementId: \"3f-corridor\",/elementId: \"3f-corridor\", location: apsLoc\\(\"3f-corridor\"\\),/' /Users/katouyuri/Claude/PointManagement/PointManagement/lib/mock-data.ts)",
+      "Bash(sed -i '' 's/elementId: \"2f-pipe\",/elementId: \"2f-pipe\", location: apsLoc\\(\"2f-pipe\"\\),/' /Users/katouyuri/Claude/PointManagement/PointManagement/lib/mock-data.ts)",
+      "Bash(sed -i '' 's/elementId: \"1f-entrance\",/elementId: \"1f-entrance\", location: apsLoc\\(\"1f-entrance\"\\),/' /Users/katouyuri/Claude/PointManagement/PointManagement/lib/mock-data.ts)",
+      "Bash(sed -i '' 's/elementId: \"roof-waterproof\",/elementId: \"roof-waterproof\", location: apsLoc\\(\"roof-waterproof\"\\),/' /Users/katouyuri/Claude/PointManagement/PointManagement/lib/mock-data.ts)",
+      "Bash(sed -i '' 's/elementId: \"b1f-elec\",/elementId: \"b1f-elec\", location: apsLoc\\(\"b1f-elec\"\\),/' /Users/katouyuri/Claude/PointManagement/PointManagement/lib/mock-data.ts)",
+      "Bash(npx tsc:*)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(npm run *)",
+      "Read(//tmp/**)",
+      "Bash(pnpm dev *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/)",
+      "Bash(curl -s -o /dev/null -w \" %{http_code}\" http://localhost:3000/issues/ISS-001)"
+    ]
+  }
+}

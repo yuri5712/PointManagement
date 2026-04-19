@@ -124,7 +124,7 @@ export default function IssueDetailPage({ params }: IssueDetailPageProps) {
           "ring-inset",
           issue.elementId && "lg:ring-2 lg:ring-blue-400/60"
         )}>
-          <APSViewer />
+          <APSViewer mode="detail" />
         </div>
 
         {/* ─── 詳細パネル ────────────────────────────────────── */}

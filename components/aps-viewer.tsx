@@ -103,6 +103,8 @@ interface APSViewerInstance {
   getProperties(dbId: number, onSuccess: (r: APSProperties) => void): void
   /** dbIds の要素を選択状態にする（SELECTION_CHANGED_EVENT が発火） */
   select(dbIds: number[]): void
+  /** 選択をすべて解除する */
+  clearSelection(): void
   setViewCube(face: string): void
   fitToView(dbIds?: number[], model?: unknown, immediate?: boolean): void
   getState(filter?: object): object
@@ -239,6 +241,7 @@ function RealAPSViewer({
   token,
   urn,
   viewMode,
+  mode,
   onElementClick,
   issues,
   onPinClick,
@@ -247,6 +250,8 @@ function RealAPSViewer({
   token: string
   urn: string
   viewMode: "3D" | "2D"
+  /** "list": Topページ（ヒートマップ）/ "detail": 詳細ページ（単一選択強調） */
+  mode: "list" | "detail"
   onElementClick: (
     id: string,
     info?: { name: string; category: string; worldPos?: WorldPos3D }
@@ -368,12 +373,11 @@ function RealAPSViewer({
     }
   }, [pendingSelectObjectId, modelReady, setPendingSelectObjectId])
 
-  // ─── selectedElementId 変化 → setThemingColor でオレンジ強調 ──
-  // modelReady 後、selectedElementId が変わるたびに:
-  //   1. clearThemingColors() で前のハイライトを消す
-  //   2. 新しい dbId が取れれば setThemingColor(dbId, orange) を適用
+  // ─── [detail mode] selectedElementId → オレンジ強調 ─────────
+  // 詳細ページのみ。対象 dbId に orange テーミングを適用。
+  // ヒートマップ（list mode）とは排他制御。
   useEffect(() => {
-    if (!modelReady) return
+    if (mode !== "detail" || !modelReady) return
     const viewer = viewerRef.current
     if (!viewer) return
 
@@ -388,7 +392,51 @@ function RealAPSViewer({
         } catch (e) { console.warn("[APS] setThemingColor failed:", e) }
       }
     }
-  }, [selectedElementId, modelReady])
+  }, [mode, selectedElementId, modelReady])
+
+  // ─── [list mode] ヒートマップ: issue件数 → 色分けテーミング ──
+  // modelReady または issues が変化するたびに全 objectId の色を再描画。
+  //   1件:   黄 Vector4(1,1,0,0.6)
+  //   2件:   橙 Vector4(1,0.5,0,0.6)
+  //   3件以上: 赤 Vector4(1,0,0,0.6)
+  // dbIdCache に存在しない objectId はスキップ（安全優先）。
+  useEffect(() => {
+    if (mode !== "list" || !modelReady) return
+    const viewer = viewerRef.current
+    if (!viewer || !window.THREE?.Vector4) return
+
+    // 前回のテーミングをリセット
+    try { viewer.clearThemingColors() } catch { /* noop */ }
+
+    // objectId ごとの issue 件数を集計
+    const counts: Record<string, number> = {}
+    for (const issue of issues) {
+      if (!issue.elementId) continue
+      counts[issue.elementId] = (counts[issue.elementId] ?? 0) + 1
+    }
+
+    // 件数に応じた色で setThemingColor
+    for (const [objectId, count] of Object.entries(counts)) {
+      const dbId = dbIdCacheRef.current.get(objectId)
+      if (dbId === undefined) continue
+      const color =
+        count >= 3 ? new window.THREE.Vector4(1, 0,   0,   0.6) // 赤
+        : count === 2 ? new window.THREE.Vector4(1, 0.5, 0,   0.6) // 橙
+        :               new window.THREE.Vector4(1, 1,   0,   0.6) // 黄
+      try { viewer.setThemingColor(dbId, color, undefined, true) } catch { /* noop */ }
+    }
+  }, [mode, issues, modelReady])
+
+  // ─── [list mode] マウント時: 選択解除 + 全体表示 ─────────────
+  // Topページへの遷移（詳細ページ → 戻る など）後に
+  // 選択状態をリセットし、モデル全体を表示する。
+  useEffect(() => {
+    if (mode !== "list" || !modelReady) return
+    const viewer = viewerRef.current
+    if (!viewer) return
+    try { viewer.clearSelection() } catch { /* noop */ }
+    try { viewer.fitToView()      } catch { /* noop */ }
+  }, [mode, modelReady])
 
   // ─── viewMode 切替（3D ↔ 2D）────────────────────────────
   useEffect(() => {
@@ -605,12 +653,11 @@ function RealAPSViewer({
       {/* APS Viewer の canvas */}
       <div ref={containerRef} className="w-full h-full" />
 
-      {/* ─── BIM ピンオーバーレイ ────────────────────────────
+      {/* ─── BIM ピンオーバーレイ（詳細ページのみ）────────────
+           Topページはヒートマップ表示のためピンは非表示。
            worldToClient で取得したスクリーン座標（px）に絶対配置。
-           CAMERA_CHANGE_EVENT / resize → updateScreenPins → screenPins 更新
-           → React 再描画 → カメラに完全追従。
       ──────────────────────────────────────────────────── */}
-      <div
+      {mode === "detail" && <div
         className="absolute inset-0 pointer-events-none z-[25]"
         aria-label="指摘ピンオーバーレイ"
       >
@@ -662,7 +709,7 @@ function RealAPSViewer({
             )
           })
         })}
-      </div>
+      </div>}
     </div>
   )
 }
@@ -671,9 +718,13 @@ function RealAPSViewer({
 // APSViewer（メインコンポーネント）
 // ─────────────────────────────────────────────────────────
 
-interface APSViewerProps { className?: string }
+interface APSViewerProps {
+  className?: string
+  /** "list": Topページ（ヒートマップ）/ "detail": 詳細ページ（単一選択強調） */
+  mode?: "list" | "detail"
+}
 
-export function APSViewer({ className }: APSViewerProps) {
+export function APSViewer({ className, mode = "list" }: APSViewerProps) {
   const router = useRouter()
   const {
     selectedElementId, focusedIssueId, currentFloor,
@@ -969,6 +1020,7 @@ export function APSViewer({ className }: APSViewerProps) {
             token={liveToken}
             urn={liveUrn}
             viewMode={viewMode}
+            mode={mode}
             onElementClick={handleAPSElementClick}
             issues={issues}
             onPinClick={(issueId) => {
